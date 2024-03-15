@@ -49,8 +49,18 @@ class System:
             'θ0': 104.52,
             'ka': 0.016764,
 
-            'temperature': 5.0
-        }
+            'temperature': 5.0,
+            'epsilonHH' : 0.046,
+            'epsilonOH' : 0.0836,
+            'epsilonOO' : 0.1521,
+
+            'rminHH' : 0.449,
+            'rminOH' : 1.9927,
+            'rminOO' : 3.5364,
+            'q1': 0.417,
+            'q2': -0.834,
+            'ke': 332.0716
+            }
 
     def add_atom(self, name: str, position: np.ndarray) -> Atom:
         atom = Atom(name, position)
@@ -109,9 +119,15 @@ class System:
         return energy_bounds + energy_angles
 
     def energy_atom(self, atom : Atom) -> float:
-        energy_bounds = sum(map(self.energy_bound, atom.bounds))
-        energy_angles = sum(map(self.energy_angle, atom.angles))
-        return energy_bounds + energy_angles
+        energies_bounds = sum(map(self.energy_bound, atom.bounds))
+        energies_angles = sum(map(self.energy_angle, atom.angles))
+        energies_vdw = 0.0
+        for target_atom in self.atoms:
+            if atom == target_atom:
+                continue
+            if frozenset((atom, target_atom)) in atom.bounds:
+                continue
+        return energies_bounds + energies_angles
 
     def energy_bound(self, bound: frozenset[Atom]) -> float:
         atom1, atom2 = bound
@@ -122,6 +138,13 @@ class System:
         v1 = atom1.pos - atom2.pos
         v2 = atom3.pos - atom2.pos
         return self.params['ka'] * (vector_angle(v1, v2, True) - self.params['θ0'])**2
+    
+    def energie_vdw(self, atom1: Atom, atom2: Atom, e: float, rmin: float) -> float:
+        r = distance(atom1.pos, atom2.pos)
+        return 4 * e * ((rmin / r)**12 - (rmin / r)**6)
+
+    def energie_coulomb(self, atom1: Atom, atom2: atom):
+        return self.params['ke'] * (atom1.charge * atom2.charge) / distance(atom1.pos, atom2.pos)
 
     def toggle_minimize(self):
         if self.minimize:
