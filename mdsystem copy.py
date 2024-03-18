@@ -24,20 +24,6 @@ def vector_angle(v1, v2, degrees=False) -> float:
 
 
 def rmsd(mobile: np.ndarray, ref: np.ndarray):
-    """Compute the Root Mean Squared Distance between 2 sets of aoms
-
-    Parameters
-    ----------
-    mobile : nb.ndarray
-        Positions of the first group of atoms.
-    ref : nb.ndarray
-        Positions of the second group of atoms.
-
-    Returns
-    -------
-    float
-        Squared distance.
-    """
     atom_count = ref.shape[0]
     result = 0
     for atom in range(atom_count):
@@ -50,6 +36,7 @@ class Atom:
     def __init__(self, name: str, position: np.ndarray, charge: float = 0.0):
         self.name = name
         self.pos = position
+        self.pos_prev = position.copy()
 
         self.bounds = set()
         self.angles = set()
@@ -62,6 +49,7 @@ class System:
         'd': 0.001,
         'dt': 0.001,
         'λ': 0.0001,
+        'temperature': 5.0,
 
         # (l, k)
         'bounds': {
@@ -121,7 +109,7 @@ class System:
                 self.metrics['energies'][-2] - self.metrics['energies'][-1])
 
         gradients = np.array(
-            [self.gradient(atom) for atom in self.atoms])
+            [self.gradient(atom, self.energy_total) for atom in self.atoms])
         self.metrics['max_gradients'].append(gradients.max())
         self.metrics['GRMS'].append(
             np.sqrt((gradients**2).sum() / gradients.size))
@@ -154,7 +142,7 @@ class System:
     #  GRADIENT  #
     ##############
 
-    def gradient(self, atom: Atom):
+    def gradient(self, atom: Atom, f: Callable):
         d = self.params['d']
         g = np.zeros_like(atom.pos)
         for i, coord in enumerate(atom.pos):
@@ -168,27 +156,40 @@ class System:
         return g
 
     def step_minimize(self):
-        self.step += 1
         λ = self.params['λ']
         for atom in self.atoms:
-            atom.pos = atom.pos + λ * self.gradient(atom)
+            atom.pos = atom.pos + λ * self.gradient(atom, self.energy_total)
 
         self.update_metrics()
 
     #TODO: stop criteria
-    def minimize(self, reset: bool = True, max_steps: int=0):
+    def minimize(self, reset: bool = True):
         if reset:
-            self.step = 0
+            self.step = 1
             self.reset_metrics()
             self.step_minimize()
 
         while True:
+            self.step += 1
             self.step_minimize()
 
-            if self.metrics['GRMS'][-1] < 0.1:
+            if self.metrics['RMSD'][-1] < 0.01:
                 break
-            if self.step >= max_steps and max_steps != 0:
-                break
+
+    def step_md(self, initial=False):
+        dt = self.params['dt']
+        T = self.params['temperature']
+        self.energy_unbound()
+
+        for atom in self.atoms:
+            g = self.gradient(atom, self.energy_atom)
+            if not initial:
+                atom.pos_prev = (2*atom.pos) - atom.pos_prev + (dt**2 * g)
+            else:
+                atom.pos_prev = atom.pos + (T**.5 * dt) + (0.5 * g * dt**2)
+
+        for atom in self.atoms:
+            atom.pos, atom.pos_prev = (atom.pos_prev, atom.pos)
 
     ###########
     #  ENERGY #
@@ -198,6 +199,18 @@ class System:
         energies_bounds = sum(map(self.energy_bound, self.bounds))
         energies_angles = sum(map(self.energy_angle, self.angles))
         energies_unbound = self.energy_unbound()
+
+        return energies_bounds + energies_angles + energies_unbound
+
+    def energy_atom(self, atom: Atom) -> float:
+        energies_bounds = sum(map(self.energy_bound, atom.bounds))
+        energies_angles = sum(map(self.energy_angle, atom.angles))
+        energies_unbound = 0.0
+
+        if not self.unbounds is None:
+            id = self.atoms.index(atom)
+            energies_unbound = self.unbounds[:, id, :].sum(
+            ) + self.unbounds[:, :, id].sum()
 
         return energies_bounds + energies_angles + energies_unbound
 
@@ -218,8 +231,9 @@ class System:
         r = distance(atom1.pos, atom2.pos)
         epsilon, rmin = self.params['vdw'].get(
             frozenset((atom1.name, atom2.name)), (0, 0))
-        return epsilon * ((rmin / r)**12 - 2*(rmin / r)**6)
+        return 4 * epsilon * ((rmin / r)**12 - (rmin / r)**6)
 
+    # TODO formule? see: https://en.wikipedia.org/wiki/AMBER
     def energie_coulomb(self, atom1: Atom, atom2: Atom):
         return self.params['ke'] * (atom1.charge * atom2.charge) / distance(atom1.pos, atom2.pos)
 
@@ -234,6 +248,65 @@ class System:
             self.unbounds[0, i, j] = self.energy_vdw(atom1, atom2)
             self.unbounds[1, i, j] = self.energie_coulomb(atom1, atom2)
         return self.unbounds.sum()
+
+    #########
+    #  GUI  #
+    #########
+
+    def _toggle_minimize(self):
+        if self.is_minimizing:
+            self.is_minimizing = False
+            self.btn_minimize.color = (120, 170, 172)
+        else:
+            self.is_minimizing = True
+            self.btn_minimize.color = (164, 202, 202)
+
+    def _toggle_simulate(self):
+        if self.is_simulating:
+            self.is_simulating = False
+            self.btn_md.color = (120, 170, 172)
+        else:
+            self.step_md(initial=True)
+            self.is_simulating = True
+            self.btn_md.color = (164, 202, 202)
+
+    def _reset_playground(self):
+        for i, atom in enumerate(self.atoms):
+            atom.pos = self.initial_coords[i]
+
+        self.is_minimizing = False
+        self.is_simulating = False
+        self.btn_md.color = (120, 170, 172)
+        self.btn_minimize.color = (120, 170, 172)
+
+    def playground(self):
+        import mdsystem_gui as gui
+
+        self.initial_coords = self.atoms_coordinates()
+
+        self.is_minimizing = False
+        self.btn_minimize = gui.Button(pos=(0, 0), text="minimize")
+        self.btn_minimize.callback = self._toggle_minimize
+
+        self.is_simulating = False
+        self.btn_md = gui.Button(pos=(100, 0), text="simulate")
+        self.btn_md.callback = self._toggle_simulate
+
+        self.btn_reset = gui.Button(pos=(200, 0), text="reset")
+        self.btn_reset.callback = self._reset_playground
+
+        gui.buttons = [self.btn_minimize, self.btn_md, self.btn_reset]
+
+        gui.init()
+        while True:
+            if self.is_minimizing:
+                self.step_minimize()
+
+            if self.is_simulating:
+                self.step_md()
+
+            gui.update(self)
+            gui.draw(self)
 
     ###########
     #  UTILS  #
