@@ -36,6 +36,7 @@ class SystemGui:
 
         self.system = system
         self.initial_coords = self.system.atoms_coordinates()
+        self.system.reset_metrics()
 
         self.is_minimizing = False
         self.btn_minimize = Button(pos=(0, 0), text="minimize")
@@ -47,12 +48,25 @@ class SystemGui:
         self.btn_reset = Button(pos=(200, 0), text="reset")
         self.btn_reset.callback = self.reset_playground
 
-        self.buttons = [self.btn_minimize, self.btn_plot, self.btn_reset]
+        self.btn_save = Button(pos=(300, 0), text="save")
+        self.btn_save.callback = self.system.save
+
+        self.buttons = [
+            self.btn_minimize,
+            self.btn_plot,
+            self.btn_reset,
+            self.btn_save
+        ]
 
     def run(self):
         while True:
             if self.is_minimizing:
                 self.system.step_minimize()
+            else:
+                self.system.update_all_distances()
+                for atom in self.system.atoms:
+                    self.system.gradient(atom)
+                self.system.update_metrics()
 
             self.update()
             self.draw()
@@ -82,9 +96,6 @@ class SystemGui:
             mouse_x, mouse_y = pygame.mouse.get_pos()
             atom.pos[0] = (mouse_x + offset[0])/100.0
             atom.pos[1] = (mouse_y + offset[1])/100.0
-
-        # Update metrics
-        self.system.update_metrics()
 
     def toggle_minimize(self):
         if self.is_minimizing:
@@ -128,7 +139,7 @@ class SystemGui:
         # Draw the metrics
         self.draw_stats(f'{"steps":>11s}: {self.system.step:<6d}', (0, 70))
         for i, (name, mesures) in enumerate(self.system.metrics.items()):
-            if name == 'coordinates' or len(mesures) == 0:
+            if name in ['coordinates', 'gradients'] or len(mesures) == 0:
                 last_mesure = 0
             else:
                 last_mesure = mesures[-1]

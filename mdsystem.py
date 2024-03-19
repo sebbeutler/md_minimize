@@ -1,32 +1,16 @@
-"""Module that perform a molecular dynamics minimization
-based on the AMBER force field and using the steepest descent algorithm."""
+"""Minimization System in molecula dynamics.
+
+Module that perform a molecular dynamics minimization
+based on the AMBER force field and using the steepest descent algorithm.
+"""
 
 from itertools import combinations
+from tqdm import tqdm
 
 import numpy as np
-import numpy.linalg
 import matplotlib.pyplot as plt
 
-import time
 
-# Dictionary to store the total execution time for each function
-function_times = {}
-
-# Function decorator to measure execution time
-def track(func):
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        if func.__name__ in function_times:
-            function_times[func.__name__] += elapsed_time
-        else:
-            function_times[func.__name__] = elapsed_time
-        return result
-    return wrapper
-
-@track
 def distance(p1: np.ndarray, p2: np.ndarray) -> float:
     """
     Calculate the Euclidean distance between two points.
@@ -43,9 +27,9 @@ def distance(p1: np.ndarray, p2: np.ndarray) -> float:
     float
         The Euclidean distance between the two points.
     """
-    return float(np.linalg.norm(p2 - p1))
+    return np.sqrt(((p1 - p2)**2).sum())
 
-@track
+
 def vector_angle(v1, v2, degrees=False) -> float:
     """
     Calculate the angle between two vectors.
@@ -78,7 +62,7 @@ def vector_angle(v1, v2, degrees=False) -> float:
 
     return np.arccos(cosine_angle)
 
-@track
+
 def rmsd(mobile: np.ndarray, ref: np.ndarray):
     """
     Calculate the root-mean-square deviation (RMSD) between two sets of points.
@@ -103,23 +87,36 @@ def rmsd(mobile: np.ndarray, ref: np.ndarray):
     return np.sqrt(result)
 
 
-class Atom:
+class Atom:  # pylint: disable=too-few-public-methods
     """Born-Oppenheimer approximation of atoms."""
 
-    def __init__(self, name: str, position: np.ndarray, charge: float = 0.0):
+    def __init__(
+        self,
+        name: str,
+        molecule: str,
+        chain : str,
+        charge: float,
+        position: np.ndarray
+    ):
         """
         Initialize an Atom object.
 
         Parameters
         ==========
         name : str
-            Name of the atom
+            Name of the atom.
+        molecule : str
+            Name of the molecule that contains the atom.
+        chain : str
+            Chain identifier for the atom.
+        charge : float
+            Charge of the atom.
         position : np.ndarray
-            Position of the atom
-        charge : float, optional
-            Charge of the atom, by default 0.0
+            Position of the atom.
         """
         self.name = name
+        self.mol = molecule
+        self.chain = chain
         self.pos = position
 
         self.bounds = set()
@@ -133,9 +130,8 @@ class System:
 
     # List of constants and parameters of the forces calculation
     const = {
-        'd': 0.001,
-        'dt': 0.001,
-        'λ': 0.0001,
+        'd': 0.01,
+        'λ': 0.001,
 
         # (l, k)
         'bounds': {
@@ -154,11 +150,6 @@ class System:
             frozenset(('O', 'O')): (0.152, 3.5364),
         },
 
-        'charges': {
-            'H':  0.417,
-            'O': -0.834,
-        },
-
         'ke': 332.0716
     }
 
@@ -171,21 +162,20 @@ class System:
         **kwargs
             Arbitrary keyword arguments.
         """
-        self.atoms_positions: np.ndarray = np.array([]) # Matrix of atoms positions in the system
-        self.atoms_name: dict[int, str] = {} # Stores all atoms names
-        self.atoms_distances = None # matric of distances
-        self.bounds: set[frozenset[int]] = set() # stores all bounded atoms
-        self.angles: set[tuple[int, ...]] = set() # stores all angles
-        self.unbounds = None # Triangular matrix of energies between atoms
+        self.atoms: list[Atom] = []  # list of atoms in the system
+        self.bounds: set[frozenset[Atom]] = set()  # stores all bounded atoms
+        self.angles: set[tuple[Atom, ...]] = set()  # stores all angles
+        self.unbounds = None  # Triangular matrix of energies between atoms
+        self.distances: dict[frozenset[Atom], float] = {}  # Atoms distances
 
-        self.const.update(kwargs) # Modify the constants from args
+        self.const.update(kwargs)  # Modify the constants from args
 
         self.step = 0
         self.reset_metrics()
 
     def reset_metrics(self):
         """Reset metrics at each minimization step."""
-        self.atoms_distances = np.zeros(())
+        self.step = 0
         self.metrics: dict[str, list] = {
             'coordinates': [],
             'energies': [],
@@ -199,7 +189,7 @@ class System:
     def update_metrics(self):
         """Record a measure for the current atom positions."""
         # Atoms postion
-        self.metrics['coordinates'].append(self.atoms_positions.copy())
+        self.metrics['coordinates'].append(self.atoms_coordinates())
         # Total system energy
         self.metrics['energies'].append(self.energy_total())
         # RMSD
@@ -219,12 +209,25 @@ class System:
         self.metrics['GRMS'].append(grms)
         self.metrics['gradients'].append([])
 
-    def add_atom(self, name: str, position: np.ndarray):
+    def add_atom(
+        self,
+        name: str,
+        mol: str,
+        chain: str,
+        charge: float,
+        position: np.ndarray
+    ) -> Atom:
         """
         Add a new atom to the system.
 
         Parameters
         ==========
+        name : str
+            Name of the atom.
+        mol : str
+            Molecule identifier for the atom.
+        chain : str
+            Chain identifier for the atom.
         position : np.ndarray
             Position of the atom.
 
@@ -233,47 +236,60 @@ class System:
         Atom
             The added atom.
         """
-        if self.atoms_positions.size == 0:
-            self.atoms_positions = np.array([position])
-        else:
-            self.atoms_positions = np.vstack([self.atoms_positions, position])
+        atom = Atom(name, mol, chain, charge, position)
+        self.atoms.append(atom)
+        return atom
 
-        index = len(self.atoms_positions)-1
-        self.atoms_name[index] = name
-        return index
-
-    def add_bound(self, atom1: int, atom2: int):
+    def add_bound(self, atom1: Atom, atom2: Atom):
         """
         Add a new bounded interaction between 2 atoms.
 
         Parameters
         ==========
-        atom1 : int
-            Index of the first atom.
-        atom2 : int
-            Index of the second atom.
+        atom1 : Atom
+            First atom.
+        atom2 : Atom
+            Second atom.
         """
         bound = frozenset((atom1, atom2))
         self.bounds.add(bound)
+        atom1.bounds.add(bound)
+        atom2.bounds.add(bound)
 
-    def add_angle(self, atom1: int, atom2: int, atom3: int):
+    def add_angle(self, atom1: Atom, atom2: Atom, atom3: Atom):
         """
         Add a new angular force between 3 atoms.
 
         Parameters
         ==========
-        atom1 : int
-            Index of the first atom.
-        atom2 : int
-            Index of the second atom.
-        atom3 : int
-            Index of the third atom.
+        atom1 : Atom
+            First atom.
+        atom2 : Atom
+            Second atom.
+        atom3 : Atom
+            Third atom.
         """
         angle = (atom1, atom2, atom3)
         self.angles.add(angle)
+        atom1.angles.add(angle)
+        atom2.angles.add(angle)
 
-    @track
-    def gradient(self) -> np.ndarray:
+    def atoms_coordinates(self) -> np.ndarray:
+        """
+        Return the positions of the atoms as an array.
+
+        Returns
+        =======
+        np.ndarray
+            Array of atom positions.
+        """
+        coords = np.zeros(
+            (len(self.atoms), self.atoms[0].pos.size), np.float32)
+        for i, atom in enumerate(self.atoms):
+            coords[i] = atom.pos.copy()
+        return coords
+
+    def gradient(self, atom: Atom) -> np.ndarray:
         """
         Calculate the gradient of the energy at the position of a given atom.
 
@@ -283,8 +299,8 @@ class System:
 
         Parameters
         ----------
-        atom : int
-            The index of the atom for which to calculate the energy gradient.
+        atom : Atom
+            The atom for which to calculate the energy gradient.
 
         Returns
         -------
@@ -292,45 +308,65 @@ class System:
             The gradient of the energy at the atom's position.
         """
         d = self.const['d']
-        g = np.zeros_like(self.atoms_positions)
-        atoms_count = self.atoms_positions.shape[0]
-        dim_count = self.atoms_positions.shape[1]
-        for atom in range(atoms_count):
-            for pos in range(dim_count):
-                coord = self.atoms_positions[atom, pos]
-                self.atoms_positions[atom, pos] = coord + d
-                energy_plus = self.energy_total()
-                self.atoms_positions[atom, pos] = coord - d
-                energy_minus = self.energy_total()
-                self.atoms_positions[atom, pos] = coord
+        g = np.zeros_like(atom.pos)
+        for i, coord in enumerate(atom.pos):
+            atom.pos[i] = coord + d
+            self.update_atom_distances(atom)
+            energy_plus = self.energy_total()
 
-                g[atom, pos] = -(energy_plus - energy_minus) / (2*d)
+            atom.pos[i] = coord - d
+            self.update_atom_distances(atom)
+            energy_minus = self.energy_total()
+
+            atom.pos[i] = coord
+
+            g[i] = -(energy_plus - energy_minus) / (2*d)
+
+        self.update_atom_distances(atom)
         self.metrics['gradients'][-1].append(g)
         return g
 
-    @track
-    def step_minimize(self):
-        """
-        Update the positions of the atoms along the gradient.
-        """
-        self.step += 1
-        λ = self.const['λ']
-        self.atoms_positions += λ * self.gradient()
+    def update_all_distances(self):
+        for atom1, atom2 in combinations(self.atoms, 2):
+            atom_pair = frozenset((atom1, atom2))
+            self.distances[atom_pair] = distance(atom1.pos, atom2.pos)
 
-        # self.update_metrics()
+    def update_atom_distances(self, atom):
+        for other_atom in self.atoms:
+            if atom == other_atom:
+                continue
+            atom_pair = frozenset((atom, other_atom))
+            self.distances[atom_pair] = distance(atom.pos, other_atom.pos)
+
+
+    def step_minimize(self):
+        """Update the positions of the atoms along the gradient."""
+        self.step += 1
+
+        # Update distances
+        self.update_all_distances()
+
+        # Update positions
+        _lambda = self.const['λ']
+        for atom in self.atoms:
+            atom.pos = atom.pos + _lambda * self.gradient(atom)
+
+        self.update_metrics()
 
     def minimize(
         self,
         reset: bool = True,
-        max_steps: int=0,
-        stop_criteria='GRMS',
-        threshold: float=0.1):
+        max_steps: int = 500,
+        min_steps: int = 100,
+        stop_criteria: str = 'GRMS',
+        threshold: float = 0.1
+    ):
         """
         Minimize the energy of the system.
 
-        This method minimizes the energy of the system by performing a series of
-        minimization steps. The minimization process continues until a specified
-        stop criterionis met or the maximum number of steps is reached.
+        This method minimizes the energy of the system by performing a series
+        of minimization steps. The minimization process continues until the
+        stop criteria is met or the maximum number of steps is reached.
 
         Parameters
         ----------
@@ -338,34 +374,30 @@ class System:
             If True, the system's metrics and step counter are reset before
             the minimization process. Defaults to True.
         max_steps : int, optional
-            The maximum number of steps to perform. If 0, the minimization
-            process continues indefinitely until the stop criterion is met.
-            Defaults to 0.
+            The maximum number of steps to perform. Defaults to 500.
+        min_steps : int, optional
+            The minimum number of steps to perform. Defaults to 100.
         stop_criteria : str, optional
             Mesure used to stop the minimization. Defaults to 'GRMS'.
         threshold : float, optional
             Value for the stop criteria threshold.
         """
-        # rest of the function code...
         if reset:
-            self.step = 0
             self.reset_metrics()
+            self.metrics['coordinates'].append(self.atoms_coordinates())
             self.step_minimize()
 
-        mesure = self.metrics[stop_criteria]
-        while True:
+        progress_bar = tqdm(range(max_steps), desc="Minimization: ")
+        for _ in progress_bar:
             self.step_minimize()
-            # print(self.step)
 
-            if len(mesure) > 0 and mesure[-1] < threshold:
+            mesure = self.metrics[stop_criteria]
+            if self.step > min_steps and mesure[-1] < threshold:
+                progress_bar.close()
+                print(f'Reached stop criteria: {stop_criteria} < {threshold}')
                 break
-            if self.step >= max_steps and max_steps != 0:
-                break
+        print('Total steps: ', self.step)
 
-    def compute_distances(self):
-        self.
-
-    @track
     def energy_total(self) -> float:
         """
         Calculate the total energy of the system.
@@ -384,15 +416,20 @@ class System:
 
         return energies_bounds + energies_angles + energies_unbound
 
-    @track
-    def energy_bound(self, bound: frozenset[int]) -> float:
+    def energy_bound(self, bound: frozenset[Atom]) -> float:
         """
         Calculate the energy of a bond between two atoms.
 
+        This method calculates the energy of a bond between two atoms
+        based on the bond's actual length and its ideal length.
+        The energy is calculated using the formula:
+            k * (l_actual - l_ideal)**2,
+        where k is the force constant and l is the bond length.
+
         Parameters
         ----------
-        bound : frozenset[int]
-            A unique set of 2 atom indices linked by a covalent bound.
+        bound : frozenset[Atom]
+            A unique set of 2 atoms linked by a covalent bound.
 
         Returns
         -------
@@ -400,20 +437,25 @@ class System:
             The energy of the bond.
         """
         atom1, atom2 = bound
-        l, k = self.const['bounds'].get(frozenset((
-            self.atoms_name[atom1],
-            self.atoms_name[atom2])))
-        return k * (distance(self.atoms_positions[atom1], self.atoms_positions[atom2]) - l)**2
+        l_ideal, k = self.const['bounds'].get(
+            frozenset((atom1.name[0], atom2.name[0])))
+        l_actual = self.distances[frozenset((atom1, atom2))]
+        return k * (l_actual - l_ideal)**2
 
-    @track
-    def energy_angle(self, angle: tuple[int, ...]) -> float:
+    def energy_angle(self, angle: tuple[Atom, ...]) -> float:
         """
         Calculate the energy of an angle formed by three atoms.
 
+        This method calculates the energy of an angle formed by
+        three atoms based on the angle's actual value and its ideal value.
+        The energy is calculated using the formula:
+            k * (θ_actual - θ_ideal)**2,
+        where k is the force constant and θ is the angle.
+
         Parameters
         ----------
-        angle : tuple[int, ...]
-            A unique set of 3 atom indices forming an angle.
+        angle : tuple[Atom, ...]
+            A unique set of 3 atoms forming an angle.
 
         Returns
         -------
@@ -421,82 +463,88 @@ class System:
             The energy of the angle.
         """
         atom1, atom2, atom3 = angle
-        v1 = self.atoms_positions[atom1] - self.atoms_positions[atom2]
-        v2 = self.atoms_positions[atom3] - self.atoms_positions[atom2]
-        θ, k = self.const['angles'].get(frozenset((
-            self.atoms_name[atom1],
-            self.atoms_name[atom2],
-            self.atoms_name[atom3])))
+        v1 = atom1.pos - atom2.pos
+        v2 = atom3.pos - atom2.pos
+        θ, k = self.const['angles'].get(
+            frozenset((atom1.name[0], atom2.name[0], atom3.name[0])))
         return k * (vector_angle(v1, v2, True) - θ)**2
 
-    @track
-    def energy_vdw(self, atom1: int, atom2: int) -> float:
+    def energy_vdw(self, atom1: Atom, atom2: Atom) -> float:
         """
         Calculate the Van Der Waals energy between two atoms.
 
-        Parameters
-        ----------
-        atom1 : int
-            Index of the first atom.
-        atom2 : int
-            Index of the second atom.
+        This method calculates the Van Der Waals energy between two atoms based
+        on their distance and the constant parameters for their atom types.
+        The energy is calculated using the Lennard-Jones potential formula:
+            ε * ((rmin / r)**12 - 2 * (rmin / r)**6),
+            where ε is the depth of the potential well,
+            rmin is the distance at which the potential reaches its minimum
+            and r is the distance between the atoms.
 
-        Returns
-        -------
-        float
-            The van der Waals energy between the two atoms.
+
+        Args:
+            atom1 (Atom): The first atom.
+            atom2 (Atom): The second atom.
+
+        Returns:
+            float: The van der Waals energy between the two atoms.
         """
-        r = distance(self.atoms_positions[atom1], self.atoms_positions[atom2])
-        epsilon, rmin = self.const['vdw'].get(frozenset((
-            self.atoms_name[atom1],
-            self.atoms_name[atom2])))
+        r = self.distances[frozenset((atom1, atom2))]
+        epsilon, rmin = self.const['vdw'].get(
+            frozenset((atom1.name[0], atom2.name[0])), (0, 0))
         return epsilon * ((rmin / r)**12 - 2*(rmin / r)**6)
 
-    @track
-    def energie_coulomb(self, atom1: int, atom2: int) -> float:
+    def energie_coulomb(self, atom1: Atom, atom2: Atom) -> float:
         """
         Calculate the electrostatic energy between two atoms.
 
+        This method calculates the electrostatic energy between two atoms
+        based their charges and the distance between them.
+        Using the Coulomb's law, the energy is calculated with the formula:
+            ke * (q1 * q2) / d,
+        where ke is Coulomb's constant,
+        q1 and q2 are the charges of the atoms
+        and d is the distance between the atoms.
+
         Parameters
         ----------
-        atom1 : int
-            Index of the first atom.
-        atom2 : int
-            Index of the second atom.
+        atom1 : Atom
+            The first atom involved in the interaction.
+        atom2 : Atom
+            The second atom involved in the interaction.
 
         Returns
         -------
         float
             The Coulomb energy between the two atoms.
         """
-        r = distance(self.atoms_positions[atom1], self.atoms_positions[atom2])
-        q1 = self.const['charges'][self.atoms_name[atom1]]
-        q2 = self.const['charges'][self.atoms_name[atom2]]
-        return self.const['ke'] * (q1 * q2) / r
+        r = self.distances[frozenset((atom1, atom2))]
+        return self.const['ke'] * (atom1.charge * atom2.charge) / r
 
-    @track
     def energy_unbound(self) -> float:
-        """Compute all unbounded interactions (VdW + Electrostatic).
+        """
+        Compute all unbounded interactions (VdW + Electrostatic).
 
         Returns
-        -------
+        =======
         float
             Sum of all unbounded interactions
         """
-        natoms = len(self.atoms_positions)
+        natoms = len(self.atoms)
         if self.unbounds is None:
             self.unbounds = np.zeros((2, natoms, natoms), dtype=np.float32)
 
-        atoms_pair = combinations(range(len(self.atoms_positions)), 2)
-        for atom1, atom2 in atoms_pair:
+        for (i, atom1), (j, atom2) in combinations(enumerate(self.atoms), 2):
+            # if atom1.mol + atom1.chain == atom2.mol + atom2.chain:
             if frozenset((atom1, atom2)) in self.bounds:
                 continue
-            self.unbounds[0, atom1, atom2] = self.energy_vdw(atom1, atom2)
-            self.unbounds[1, atom1, atom2] = self.energie_coulomb(atom1, atom2)
+            self.unbounds[0, i, j] = self.energy_vdw(atom1, atom2)
+            self.unbounds[1, i, j] = self.energie_coulomb(atom1, atom2)
         return self.unbounds.sum()
 
     def plot(self, ax=None, mesure='energies', xlabel='', ylabel='', **kwargs):
-        """Plot a measure
+        """
+        Plot a measure.
 
         Parameters
         ==========
@@ -506,43 +554,54 @@ class System:
             Label for the x-axis, by default ''
         ylabel : str, optional
         """
+        mesure_count = range(len(self.metrics[mesure]))
+
         if ax is None:
-            ax = plt
-        ax.grid(True)
-        ax.set_xlabel(xlabel)   # type: ignore
-        ax.set_ylabel(ylabel)   # type: ignore
-        nb_mesure = range(len(self.metrics[mesure]))
-        ax.plot(nb_mesure, self.metrics[mesure], **kwargs)
+            plt.grid(True)
+            plt.xlabel(xlabel)
+            plt.ylabel(ylabel)
+            plt.title(mesure)
+            plt.plot(mesure_count, self.metrics[mesure], **kwargs)
+            plt.show()
+        else:
+            ax.grid(True)
+            ax.set_xlabel(xlabel)   # type: ignore
+            ax.set_ylabel(ylabel)   # type: ignore
+            ax.set_title(mesure)    # type: ignore
+            mesure_count = range(len(self.metrics[mesure]))
+            ax.plot(mesure_count, self.metrics[mesure], **kwargs)
 
     def plot_all(self, dpi=150.0, width=9, height=5):
-            """Plot all metrics in a grid of subplots.
+        """
+        Plot all metrics in a grid of subplots.
 
-            Args:
-                dpi : float, optional
-                    Dots per inch for the figure. Defaults to 150.0.
-                width : int, optional
-                    Width of the figure in inches. Defaults to 9.
-                height : int, optional
-                    Height of the figure in inches. Defaults to 5.
-            """
-            def _set_size(w: int, h: int):
-                ax = plt.gca()
-                l = ax.figure.subplotpars.left  # type: ignore
-                r = ax.figure.subplotpars.right # type: ignore
-                t = ax.figure.subplotpars.top   # type: ignore
-                b = ax.figure.subplotpars.bottom    # type: ignore
-                figw = float(w)/(r-l)
-                figh = float(h)/(t-b)
-                ax.figure.set_size_inches(figw, figh)   # type: ignore
+        Args:
+            dpi : float, optional
+                Dots per inch for the figure. Defaults to 150.0.
+            width : int, optional
+                Width of the figure in inches. Defaults to 9.
+            height : int, optional
+                Height of the figure in inches. Defaults to 5.
+        """
+        def _set_size(w: int, h: int):
+            ax = plt.gca()
+            left = ax.figure.subplotpars.left      # type: ignore
+            right = ax.figure.subplotpars.right    # type: ignore
+            top = ax.figure.subplotpars.top        # type: ignore
+            bottom = ax.figure.subplotpars.bottom  # type: ignore
+            figw = float(w)/(right-left)
+            figh = float(h)/(top-bottom)
+            ax.figure.set_size_inches(figw, figh)  # type: ignore
 
-            fig, axes = plt.subplots(2, 3)
-            fig.tight_layout()
-            _set_size(9, 5)
-            for i, mesure in enumerate(self.metrics):
-                if mesure == 'coordinates':
-                    continue
-                self.plot(axes[i%2][i%3], mesure)
-            plt.show()
+        fig, axes = plt.subplots(2, 3)
+        fig.set_dpi(dpi)
+        fig.tight_layout()
+        _set_size(width, height)
+        for i, mesure in enumerate(self.metrics):
+            if mesure in ['coordinates', 'gradients']:
+                continue
+            self.plot(axes[i % 2][i % 3], mesure)
+        plt.show()
 
     def save(self, filename='out.pdb'):
         """
@@ -553,41 +612,31 @@ class System:
         filename : str, optional
             The name of the file system  will be saved. Defaults to 'out.pdb'.
         """
-        with open(filename, 'w') as pdb:
+        with open(filename, 'w', encoding="utf-8") as pdb:
             pdb.write("HEADER SYSTEM1\n")
             pdb.write("TITLE MINIMIZE 2 BOUNDS\n")
 
             for i, frame in enumerate(self.metrics['coordinates']):
-                pdb.write(f'MODEL {i}\n')
+                pdb.write(f'MODEL {i+1}\n')
 
                 # Atoms coordinates
-                for atom in range(frame.shape[0]):
+                for i in range(frame.shape[0]):
+                    atom = self.atoms[i]
                     pdb.write(
-                        "{:6s}{:5d} {:^4s}{:1s}{:3s} "
-                        "{:1s}{:4d}{:1s}    "
-                        "{:8.3f}{:8.3f}{:8.3f}{:6.2f}{:6.2f}              "
-                        "{:>2s}{:2s}"
+                        f"{'ATOM':6s}{i+1:5d} {atom.name:^4s}"
+                        f"{'':1s}{atom.mol:3s} {atom.chain:1s}{1:4d}"
+                        f"{'':1s}   {frame[i, 0]:8.3f}{frame[i, 1]:8.3f}"
+                        f"{frame[i, 2]:8.3f}{1.0:6.2f}{1.0:6.2f}          "
+                        f"{self.atoms[i].name:>2s}{'':2s}"
                         "\n"
-                        .format(
-                            "ATOM", atom+1, 'H', ' ', 'H20', 'A', 1, ' ',
-                            frame[atom, 0], frame[atom, 1],
-                            frame[atom, 2], 1.0, 1.0, 'H', '  '
-                        )
                     )
 
                 # Covalent bounds from atoms indices
                 for bound in self.bounds:
                     atom1, atom2 = bound
                     pdb.write(
-                        "CONECT{:5d}{:5d}\n"
-                        .format(
-                            atom1+1,
-                            atom2+1
-                        )
+                        f"CONECT{self.atoms.index(atom1)+1:5d}"
+                        f"{self.atoms.index(atom2)+1:5d}\n"
                     )
                 pdb.write('ENDMDL\n')
             pdb.write('END\n')
-
-    #TODO
-    def load(self, filename: str):
-        pass
