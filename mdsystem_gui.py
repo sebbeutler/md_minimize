@@ -1,15 +1,20 @@
-import pygame
 import sys
+import pygame
 
 from mdsystem import *
-
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 SPHERE_RADIUS = 20
 BACKGROUND_COLOR = (96, 124, 141)
 
 class Button:
-    def __init__(self, pos=(50,50), size=(70,30), color=(120,170,172), text="hello", callback=lambda:0):
+    def __init__(
+        self, pos=(50,50),
+        size=(70,30),
+        color=(120,170,172),
+        text="hello",
+        callback=lambda:0
+        ):
         self.pos = pos
         self.size = size
         self.color = color
@@ -36,10 +41,13 @@ class SystemGui:
         self.btn_minimize = Button(pos=(0, 0), text="minimize")
         self.btn_minimize.callback = self.toggle_minimize
 
+        self.btn_plot = Button(pos=(100, 0), text="plot")
+        self.btn_plot.callback = self.system.plot_all
+
         self.btn_reset = Button(pos=(200, 0), text="reset")
         self.btn_reset.callback = self.reset_playground
 
-        self.buttons = [self.btn_minimize, self.btn_reset]
+        self.buttons = [self.btn_minimize, self.btn_plot, self.btn_reset]
 
     def run(self):
         while True:
@@ -83,6 +91,7 @@ class SystemGui:
             self.is_minimizing = False
             self.btn_minimize.color = (120, 170, 172)
         else:
+            self.system.reset_metrics()
             self.is_minimizing = True
             self.btn_minimize.color = (164, 202, 202)
 
@@ -90,12 +99,11 @@ class SystemGui:
         for i, atom in enumerate(self.system.atoms):
             atom.pos = self.initial_coords[i]
 
+        self.system.reset_metrics()
         self.is_minimizing = False
         self.btn_minimize.color = (120, 170, 172)
 
     def draw(self):
-        global buttons
-
         # Draw background
         self.screen.fill(BACKGROUND_COLOR)
 

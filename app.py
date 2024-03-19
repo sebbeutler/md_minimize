@@ -1,80 +1,51 @@
-from mdsystem import *
+import numpy as np
+from mdsystem import System as System1
+from mdsystem import function_times
+from mdsystem_copy import System as System2
+import time
+import random
 
-system = System()
+random.seed(42)
+np.random.seed(42)
 
-O = system.add_atom('O', np.array([2.0, 2.0, 0.0]))
-# H1 = system.add_atom('H', np.array([3.0, 3.0, 0.0]))
-# H2 = system.add_atom('H', np.array([1.5, 2.5, 0.0]))
+# System
+def md_time(system):
+    start = time.time()
+    # Water 1
+    O = system.add_atom('O', np.array([2.0, 2.0, 0.0]))
+    H1 = system.add_atom('H', np.array([3.0, 3.0, 0.0]))
+    H2 = system.add_atom('H', np.array([1.5, 2.5, 0.0]))
 
-# system.add_bound(O, H1)
-# system.add_bound(O, H2)
-# system.add_angle(H1, O, H2)
+    system.add_bound(O, H1)
+    system.add_bound(O, H2)
+    system.add_angle(H1, O, H2)
 
-O = system.add_atom('O', np.array([4.0, 4.0, 0.0]))
-# H1 = system.add_atom('H', np.array([5.0, 5.0, 0.0]))
-# H2 = system.add_atom('H', np.array([3.5, 5.5, 0.0]))
+    # Water 2
+    O = system.add_atom('O', np.array([4.0, 4.0, 0.0]))
+    H1 = system.add_atom('H', np.array([5.0, 5.0, 0.0]))
+    H2 = system.add_atom('H', np.array([3.5, 5.5, 0.0]))
 
-# system.add_bound(O, H1)
-# system.add_bound(O, H2)
-# system.add_angle(H1, O, H2)
+    system.add_bound(O, H1)
+    system.add_bound(O, H2)
+    system.add_angle(H1, O, H2)
 
-# Analyze
+    for i in range(3):
+        system.add_atom(random.choice(['H', 'O']), np.random.uniform(low=-10, high=10, size=3))
 
-# system.minimize(max_steps=1000)
+    # Minimize & Analyze
+    system.minimize(max_steps=500, threshold=0.000000000001)
+    # system.plot_all()
+    print(system.step)
+    print('Time: ', time.time() - start, 's')
 
-from mdsystem_gui import SystemGui
 
-gui = SystemGui(system)
-gui.run()
+md_time(System1())
+for func_name, total_time in function_times.items():
+    print(f"Function '{func_name}' total execution time: {total_time} seconds")
+# md_time(System2())
 
-# Plot
+# Playground
+# from mdsystem_gui import SystemGui
 
-import matplotlib.pyplot as plt
-
-steps = np.arange(system.step)
-
-def set_size(w: int, h: int):
-    """ w, h: width, height in inches """
-    ax = plt.gca()
-    l = ax.figure.subplotpars.left  # type: ignore
-    r = ax.figure.subplotpars.right # type: ignore
-    t = ax.figure.subplotpars.top   # type: ignore
-    b = ax.figure.subplotpars.bottom    # type: ignore
-    figw = float(w)/(r-l)
-    figh = float(h)/(t-b)
-    ax.figure.set_size_inches(figw, figh)   # type: ignore
-
-fig, ((ax1, ax2, ax3), (ax4, ax5, ax6))= plt.subplots(2, 3)
-
-fig.set_dpi(150.0)
-fig.tight_layout()
-set_size(9, 5)
-
-ax1.set_ylabel('E')
-ax1.set_title('Energie')
-# ax1.set_ylim([0,2])
-ax1.grid(True)
-ax1.plot(steps, system.metrics['energies'])
-
-ax2.set_ylabel('gradient')
-ax2.set_title('Max Gradient')
-ax2.grid(True)
-ax2.plot(steps, system.metrics['max_gradients'])
-
-ax3.set_ylabel('GRMS')
-ax3.set_title('GRMS')
-ax3.set_ylim([0,2])
-ax3.grid(True)
-ax3.plot(steps, system.metrics['GRMS'])
-
-ax4.set_ylabel('E')
-ax4.set_title('Energie difference')
-ax4.grid(True)
-ax4.plot(steps, system.metrics['energie_diff'])
-
-ax5.set_ylabel('RMSD')
-ax5.set_title('RMSD')
-ax5.grid(True)
-ax5.plot(steps, system.metrics['RMSD'])
-
-plt.show()
+# gui = SystemGui(system)
+# gui.run()
