@@ -1,7 +1,7 @@
 """Minimization System in molecula dynamics.
 
 Module that perform a molecular dynamics minimization
-based on the AMBER force field and using the steepest descent algorithm.
+based on the CHARMM force field and using the steepest descent algorithm.
 """
 
 from itertools import combinations
@@ -94,7 +94,7 @@ class Atom:  # pylint: disable=too-few-public-methods
         self,
         name: str,
         molecule: str,
-        chain : str,
+        chain: str,
         charge: float,
         position: np.ndarray
     ):
@@ -141,13 +141,14 @@ class System:
         # (θ, k)
         'angles': {
             frozenset(('H', 'O', 'H')): (104.52, 0.016764),
+            # frozenset(('H', 'O', 'H')): (1,824, 55.0),  # Radian
         },
 
         # (epsilon, rMin)
         'vdw': {
             frozenset(('H', 'H')): (0.046, 0.449),
             frozenset(('H', 'O')): (0.0836, 1.9927),
-            frozenset(('O', 'O')): (0.152, 3.5364),
+            frozenset(('O', 'O')): (0.1521, 3.5364),
         },
 
         'ke': 332.0716
@@ -171,6 +172,7 @@ class System:
         self.const.update(kwargs)  # Modify the constants from args
 
         self.step = 0
+        self.bounded = False
         self.reset_metrics()
 
     def reset_metrics(self):
@@ -184,6 +186,11 @@ class System:
             'gradients': [[]],
             'max_gradients': [],
             'GRMS': [],
+
+            'bound': [],
+            'angle': [],
+            'vdw': [],
+            'electrostatic': []
         }
 
     def update_metrics(self):
@@ -191,7 +198,7 @@ class System:
         # Atoms postion
         self.metrics['coordinates'].append(self.atoms_coordinates())
         # Total system energy
-        self.metrics['energies'].append(self.energy_total())
+        self.metrics['energies'].append(self.energy_total(metrics=True))
         # RMSD
         if len(self.metrics['coordinates']) >= 2:
             self.metrics['RMSD'].append(rmsd(
@@ -327,17 +334,26 @@ class System:
         return g
 
     def update_all_distances(self):
+        """
+        Update distances between all pairs of atoms in the system.
+
+        The distances are stored in the `distances` dictionary.
+        """
         for atom1, atom2 in combinations(self.atoms, 2):
             atom_pair = frozenset((atom1, atom2))
             self.distances[atom_pair] = distance(atom1.pos, atom2.pos)
 
     def update_atom_distances(self, atom):
+        """
+        Update distances for a single atom and the other atoms in the system.
+
+        The distances are stored in the `distances` dictionary.
+        """
         for other_atom in self.atoms:
             if atom == other_atom:
                 continue
             atom_pair = frozenset((atom, other_atom))
             self.distances[atom_pair] = distance(atom.pos, other_atom.pos)
-
 
     def step_minimize(self):
         """Update the positions of the atoms along the gradient."""
@@ -359,7 +375,8 @@ class System:
         max_steps: int = 500,
         min_steps: int = 100,
         stop_criteria: str = 'GRMS',
-        threshold: float = 0.1
+        threshold: float = 0.01,
+        bounded_only: bool = False
     ):
         """
         Minimize the energy of the system.
@@ -380,30 +397,52 @@ class System:
         stop_criteria : str, optional
             Mesure used to stop the minimization. Defaults to 'GRMS'.
         threshold : float, optional
-            Value for the stop criteria threshold.
+            Value for the stop criteria threshold. Default to 0.01.
+        bounded_only : bool, optional
+            Minimize only bounded interactions. Default to False.
         """
+        self.bounded = bounded_only
+
         if reset:
             self.reset_metrics()
             self.metrics['coordinates'].append(self.atoms_coordinates())
             self.step_minimize()
 
-        progress_bar = tqdm(range(max_steps), desc="Minimization: ")
-        for _ in progress_bar:
+        def _info():
+            return (
+                f"step: {self.step:>4d} "
+                f"E: {self.metrics['energies'][-1]:>6.3f} "
+                f"GRMS: {self.metrics['GRMS'][-1]:>5.2f} "
+                f"RMSD: {self.metrics['RMSD'][-1]:>3.3f} "
+            )
+
+        print("\u001b[33m[Initial]\u001b[0m   ", _info())
+        for _ in (progress := tqdm(range(max_steps))):
             self.step_minimize()
+            if self.step % 100 == 0:
+                progress.set_description(
+                    "\u001b[34m[Minimizing]\u001b[0m " + _info() + " :: ")
 
             mesure = self.metrics[stop_criteria]
             if self.step > min_steps and mesure[-1] < threshold:
-                progress_bar.close()
-                print(f'Reached stop criteria: {stop_criteria} < {threshold}')
+                progress.close()
+                print(
+                    f"\u001b[36m[Info]\u001b[0m "
+                    f"Reached stop criteria: {stop_criteria} < {threshold}")
                 break
-        print('Total steps: ', self.step)
+        print("\u001b[32m[Done]\u001b[0m       " + _info())
 
-    def energy_total(self) -> float:
+    def energy_total(self, metrics: bool = False) -> float:
         """
         Calculate the total energy of the system.
 
         This method calculates the total energy of the system by summing up
         the energy of all bonds, angles, and unbound atoms in the system.
+
+        Parameters
+        ----------
+        metrics : bool
+            Save the different energies into the mesurement history.
 
         Returns
         -------
@@ -412,9 +451,17 @@ class System:
         """
         energies_bounds = sum(map(self.energy_bound, self.bounds))
         energies_angles = sum(map(self.energy_angle, self.angles))
-        energies_unbound = self.energy_unbound()
+        energies_vdw, energies_elec = self.energy_unbound()
 
-        return energies_bounds + energies_angles + energies_unbound
+        if metrics:
+            self.metrics['bound'].append(energies_bounds)
+            self.metrics['angle'].append(energies_angles)
+            self.metrics['vdw'].append(energies_vdw)
+            self.metrics['electrostatic'].append(energies_elec)
+
+        if self.bounded:
+            return energies_bounds + energies_angles
+        return energies_bounds + energies_angles + energies_vdw + energies_elec
 
     def energy_bound(self, bound: frozenset[Atom]) -> float:
         """
@@ -492,7 +539,7 @@ class System:
         r = self.distances[frozenset((atom1, atom2))]
         epsilon, rmin = self.const['vdw'].get(
             frozenset((atom1.name[0], atom2.name[0])), (0, 0))
-        return epsilon * ((rmin / r)**12 - 2*(rmin / r)**6)
+        return epsilon * ((rmin / r)**12 - (rmin / r)**6)
 
     def energie_coulomb(self, atom1: Atom, atom2: Atom) -> float:
         """
@@ -519,16 +566,18 @@ class System:
             The Coulomb energy between the two atoms.
         """
         r = self.distances[frozenset((atom1, atom2))]
-        return self.const['ke'] * (atom1.charge * atom2.charge) / r
+        e = self.const['ke'] * (atom1.charge * atom2.charge) / r
+        # print(atom1.name, atom2.name, e)
+        return e
 
-    def energy_unbound(self) -> float:
+    def energy_unbound(self) -> tuple[float, float]:
         """
         Compute all unbounded interactions (VdW + Electrostatic).
 
         Returns
         =======
-        float
-            Sum of all unbounded interactions
+        (float, float)
+            Sum of the Van Der Walls energies and the electrostatic energies.
         """
         natoms = len(self.atoms)
         if self.unbounds is None:
@@ -538,9 +587,11 @@ class System:
             # if atom1.mol + atom1.chain == atom2.mol + atom2.chain:
             if frozenset((atom1, atom2)) in self.bounds:
                 continue
+            if atom1.mol + atom1.chain == atom2.mol + atom2.chain:
+                continue
             self.unbounds[0, i, j] = self.energy_vdw(atom1, atom2)
             self.unbounds[1, i, j] = self.energie_coulomb(atom1, atom2)
-        return self.unbounds.sum()
+        return self.unbounds[0].sum(), self.unbounds[1].sum()
 
     def plot(self, ax=None, mesure='energies', xlabel='', ylabel='', **kwargs):
         """
@@ -593,14 +644,22 @@ class System:
             figh = float(h)/(top-bottom)
             ax.figure.set_size_inches(figw, figh)  # type: ignore
 
-        fig, axes = plt.subplots(2, 3)
+        fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
         fig.set_dpi(dpi)
         fig.tight_layout()
         _set_size(width, height)
-        for i, mesure in enumerate(self.metrics):
-            if mesure in ['coordinates', 'gradients']:
-                continue
-            self.plot(axes[i % 2][i % 3], mesure)
+        self.plot(ax1, 'energies')
+        self.plot(ax2, 'energie_diff')
+        self.plot(ax3, 'RMSD')
+        self.plot(ax4, 'max_gradients')
+        self.plot(ax5, 'GRMS')
+
+        self.plot(ax6, 'bound', label="bound")
+        self.plot(ax6, 'angle', label="angle")
+        self.plot(ax6, 'vdw', label="vdw")
+        self.plot(ax6, 'electrostatic', label="electrostatic")
+        ax6.set_title('Interactions')
+        ax6.legend()
         plt.show()
 
     def save(self, filename='out.pdb'):

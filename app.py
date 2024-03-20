@@ -4,8 +4,9 @@ from mdsystem import System
 # System
 system = System()
 
+
 # Water molecule 1
-O1 = system.add_atom('O1', 'H20', '1', -0.834, np.array([3.0, 2.0, 0.0]))
+O1 = system.add_atom('O1', 'H20', '1', -0.834, np.array([3.084, 2.0, 0.0]))
 H1 = system.add_atom('H1', 'H20', '1', 0.417, np.array([2.0, 1.0, -0.5]))
 H2 = system.add_atom('H2', 'H20', '1', 0.417, np.array([4.0, 1.0, -0.5]))
 
@@ -25,21 +26,19 @@ system.add_angle(H3, O2, H4)
 
 # Minimize & Analyze
 system.minimize(
-    max_steps=200,
+    max_steps=5000,
+    min_steps=100,
+    stop_criteria='GRMS',
+    threshold=0.01,
+    bounded_only=True
+)
+
+system.minimize(
+    max_steps=5000,
     min_steps=100,
     stop_criteria='GRMS',
     threshold=0.01
 )
-print(system.metrics['energies'])
-system.plot()
-# system.save('water.pdb')
 
-# system.metrics['coordinates'].append(system.atoms_coordinates())
-# system.minimize(False, max_steps=500)
-# system.save('water.pdb')
-
-# Playground
-# from mdsystem_gui import SystemGui
-
-# gui = SystemGui(system)
-# gui.run()
+system.plot_all()
+system.save('aout.pdb')
