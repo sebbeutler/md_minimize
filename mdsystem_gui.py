@@ -149,7 +149,7 @@ class SystemGui:
         pygame.display.flip()
 
         # Control the frame rate
-        pygame.time.Clock().tick(60)
+        # pygame.time.Clock().tick(120)
 
     def draw_stats(self, text: str, pos: tuple[int, int]):
         size = (120, 40)
