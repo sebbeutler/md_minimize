@@ -1,12 +1,17 @@
 # Molecular Dynamics: Minimization
 
+## Description
+
+
 ## Installation
 
-(Required) `pip install numpy`
-(Optional: plot) `pip install matplotlib`
-(Optional: playground) `pip install pygame`
+
+`git clone https://github.com/sebbeutler/md_minimize.git && cd md_minimize`
+`pip install numpy matplotlib tqdm`
 
 ## Usage
+
+`python water_system.py`
 
 ```python
 from mdsystem import *
@@ -32,3 +37,7 @@ system.minimize()
 system.plot('energies', xlabel='steps', ylabel='E')
 system.save('water.pdb')
 ```
+
+## Reference
+
+## Bonus
