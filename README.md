@@ -2,42 +2,85 @@
 
 ## Description
 
-
 ## Installation
 
+1. Clone the repository
 
-`git clone https://github.com/sebbeutler/md_minimize.git && cd md_minimize`
-`pip install numpy matplotlib tqdm`
+    ```sh
+    git clone https://github.com/sebbeutler/md_minimize.git && cd md_minimize
+    ```
+
+2. Install dependencies
+
+    ```sh
+    pip install numpy matplotlib tqdm
+    ```
 
 ## Usage
 
-`python water_system.py`
+1. Import the module
 
-```python
-from mdsystem import *
+    ```python
+    from minimize import System
+    ```
 
-# Base class
-system = System()
+2. Create a system
 
-# Coordinates
-O = system.add_atom('O', np.array([4.0, 4.0]))
-H1 = system.add_atom('H', np.array([5.0, 5.0]))
-H2 = system.add_atom('H', np.array([3.5, 5.5]))
+    ```python
+    system = System()
+    ```
 
-# Bounds
-system.add_bound(O, H1)
-system.add_bound(O, H2)
-system.add_angle(H1, O, H2)
+3. Add atoms and interactions
 
-# Minimize
-system.minimize()
-# system.playground()
+    ```python
+    O1 = system.add_atom('O1', 'H20', '1', -0.834, np.array([3.084, 2.0]))
+    H1 = system.add_atom('H1', 'H20', '1', 0.417, np.array([2.0, 1.0]))
+    H2 = system.add_atom('H2', 'H20', '1', 0.417, np.array([4.0, 1.0]))
 
-# Analyze
-system.plot('energies', xlabel='steps', ylabel='E')
-system.save('water.pdb')
-```
+    system.add_bond(O1, H1)
+    system.add_bond(O1, H2)
+    system.add_angle(H1, O1, H2)
+    ```
 
-## Reference
+4. Perform the minimization
+
+    ```python
+    system.minimize(
+        max_steps=5000,
+        min_steps=100,
+        stop_criteria='GRMS',
+        threshold=0.01
+    )
+    ```
+
+5. Analyze the results
+
+    ```python
+    system.plot_all()
+    system.save('water.pdb')
+    ```
+
+## Run the example
+
+System of 2 water molecules
+
+    ```sh
+    python water_system.py
+    ```
 
 ## Bonus
+
+Quick graphical playground to visualize the minimization in 2D.
+Press the button minimize to toggle the minimization.
+Atoms can me moved by drag&drop.
+
+(Requirement)
+    ```sh
+    pip install pygame
+    ```
+
+Exection
+    ```sh
+    python minimize_gui.py
+    ```
+

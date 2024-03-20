@@ -119,8 +119,8 @@ class SystemGui:
         self.screen.fill(BACKGROUND_COLOR)
 
         # Draw lines connecting spheres
-        for bound in self.system.bounds:
-            atom1, atom2 = bound
+        for bond in self.system.bonds:
+            atom1, atom2 = bond
             pygame.draw.line(self.screen, (121, 158, 196), (atom1.pos[:2]*100).astype(int), (atom2.pos[:2]*100).astype(int), 1) # type: ignore
 
         # Draw spheres
@@ -159,3 +159,12 @@ class SystemGui:
         text_x = 5
         text_y = pos[1] + (size[1] - text_size[1]) / 2
         self.screen.blit(text_surface, (text_x, text_y))
+
+if __name__ == '__main__':
+    from water_system import system
+
+    # 2D coordinates only
+    for atom in system.atoms:
+        atom.pos = atom.pos[:2]
+
+    SystemGui(system).run()

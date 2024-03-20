@@ -108,7 +108,7 @@ class Atom:
         self.chain = chain
         self.pos = position
 
-        self.bounds = set()
+        self.bonds = set()
         self.angles = set()
 
         self.charge = charge
@@ -127,11 +127,11 @@ class System:
             Arbitrary keyword arguments.
         """
         self.atoms: list[Atom] = []  # list of atoms in the system
-        self.bounds: set[frozenset[Atom]] = set()  # stores all bounded atoms
+        self.bonds: set[frozenset[Atom]] = set()  # stores all bonded atoms
         self.angles: set[tuple[Atom, ...]] = set()  # stores all angles
         self.distances: dict[frozenset[Atom], float] = {}  # Atoms distances
         self.step = 0  # Current step
-        self.bounded = False  # Process only bounded intercations
+        self.bonded = False  # Process only bonded intercations
 
         # List of constants and parameters of the forces calculation
         self.const = {
@@ -139,7 +139,7 @@ class System:
             'λ': 0.001,
 
             # (l, k)
-            'bounds': {
+            'bonds': {
                 frozenset(('H', 'O')): (0.9572, 450.0),
             },
 
@@ -176,7 +176,7 @@ class System:
             'max_gradients': [],
             'GRMS': [],
 
-            'bound': [],
+            'bond': [],
             'angle': [],
             'vdw': [],
             'electrostatic': []
@@ -236,9 +236,9 @@ class System:
         self.atoms.append(atom)
         return atom
 
-    def add_bound(self, atom1: Atom, atom2: Atom):
+    def add_bond(self, atom1: Atom, atom2: Atom):
         """
-        Add a new bounded interaction between 2 atoms.
+        Add a new bonded interaction between 2 atoms.
 
         Parameters
         ==========
@@ -247,10 +247,10 @@ class System:
         atom2 : Atom
             Second atom.
         """
-        bound = frozenset((atom1, atom2))
-        self.bounds.add(bound)
-        atom1.bounds.add(bound)
-        atom2.bounds.add(bound)
+        bond = frozenset((atom1, atom2))
+        self.bonds.add(bond)
+        atom1.bonds.add(bond)
+        atom2.bonds.add(bond)
 
     def add_angle(self, atom1: Atom, atom2: Atom, atom3: Atom):
         """
@@ -361,7 +361,7 @@ class System:
         min_steps: int = 100,
         stop_criteria: str = 'GRMS',
         threshold: float = 0.01,
-        bounded_only: bool = False
+        bonded_only: bool = False
     ):
         """
         Minimize the energy of the system.
@@ -383,10 +383,10 @@ class System:
             Mesure used to stop the minimization. Defaults to 'GRMS'.
         threshold : float, optional
             Value for the stop criteria threshold. Default to 0.01.
-        bounded_only : bool, optional
-            Minimize only bounded interactions. Default to False.
+        bonded_only : bool, optional
+            Minimize only bonded interactions. Default to False.
         """
-        self.bounded = bounded_only
+        self.bonded = bonded_only
 
         if reset:
             self.reset_metrics()
@@ -425,7 +425,7 @@ class System:
         Calculate the total energy of the system.
 
         This method calculates the total energy of the system by summing up
-        the energy of all bonds, angles, and unbound atoms in the system.
+        the energy of all bonds, angles, and unbond atoms in the system.
 
         Parameters
         ----------
@@ -437,21 +437,21 @@ class System:
         float
             The total energy of the system.
         """
-        energies_bounds = sum(map(self.energy_bound, self.bounds))
+        energies_bonds = sum(map(self.energy_bond, self.bonds))
         energies_angles = sum(map(self.energy_angle, self.angles))
-        energies_vdw, energies_elec = self.energy_unbound()
+        energies_vdw, energies_elec = self.energy_unbond()
 
         if metrics:
-            self.metrics['bound'].append(energies_bounds)
+            self.metrics['bond'].append(energies_bonds)
             self.metrics['angle'].append(energies_angles)
             self.metrics['vdw'].append(energies_vdw)
             self.metrics['electrostatic'].append(energies_elec)
 
-        if self.bounded:
-            return energies_bounds + energies_angles
-        return energies_bounds + energies_angles + energies_vdw + energies_elec
+        if self.bonded:
+            return energies_bonds + energies_angles
+        return energies_bonds + energies_angles + energies_vdw + energies_elec
 
-    def energy_bound(self, bound: frozenset[Atom]) -> float:
+    def energy_bond(self, bond: frozenset[Atom]) -> float:
         """
         Calculate the energy of a bond between two atoms.
 
@@ -463,18 +463,18 @@ class System:
 
         Parameters
         ----------
-        bound : frozenset[Atom]
-            A unique set of 2 atoms linked by a covalent bound.
+        bond : frozenset[Atom]
+            A unique set of 2 atoms linked by a covalent bond.
 
         Returns
         -------
         float
             The energy of the bond.
         """
-        atom1, atom2 = bound
-        l_ideal, k = self.const['bounds'].get(
+        atom1, atom2 = bond
+        l_ideal, k = self.const['bonds'].get(
             frozenset((atom1.name[0], atom2.name[0])))
-        l_actual = self.distances[bound]
+        l_actual = self.distances[bond]
         return k * (l_actual - l_ideal)**2
 
     def energy_angle(self, angle: tuple[Atom, ...]) -> float:
@@ -556,9 +556,9 @@ class System:
         r = self.distances[frozenset((atom1, atom2))]
         return self.const['ke'] * (atom1.charge * atom2.charge) / r
 
-    def energy_unbound(self) -> tuple[float, float]:
+    def energy_unbond(self) -> tuple[float, float]:
         """
-        Compute all unbounded interactions (VdW + Electrostatic).
+        Compute all unbonded interactions (VdW + Electrostatic).
 
         Returns
         =======
@@ -569,7 +569,7 @@ class System:
         electrostatic_energy = 0.0
 
         for atom1, atom2 in combinations(self.atoms, 2):
-            # Ignore intra-molecular unbounded interactions
+            # Ignore intra-molecular unbonded interactions
             if atom1.mol + atom1.chain == atom2.mol + atom2.chain:
                 continue
             vdw_energy += self.energy_vdw(atom1, atom2)
@@ -638,7 +638,7 @@ class System:
         self.plot(ax4, 'max_gradients')
         self.plot(ax5, 'GRMS')
 
-        self.plot(ax6, 'bound', label="bound")
+        self.plot(ax6, 'bond', label="bond")
         self.plot(ax6, 'angle', label="angle")
         self.plot(ax6, 'vdw', label="vdw")
         self.plot(ax6, 'electrostatic', label="electrostatic")
@@ -657,7 +657,7 @@ class System:
         """
         with open(filename, 'w', encoding="utf-8") as pdb:
             pdb.write("HEADER SYSTEM1\n")
-            pdb.write("TITLE MINIMIZE 2 BOUNDS\n")
+            pdb.write("TITLE MINIMIZE 2 bondS\n")
 
             for i, frame in enumerate(self.metrics['coordinates']):
                 pdb.write(f'MODEL {i+1}\n')
@@ -674,9 +674,9 @@ class System:
                         "\n"
                     )
 
-                # Covalent bounds from atoms indices
-                for bound in self.bounds:
-                    atom1, atom2 = bound
+                # Covalent bonds from atoms indices
+                for bond in self.bonds:
+                    atom1, atom2 = bond
                     pdb.write(
                         f"CONECT{self.atoms.index(atom1)+1:5d}"
                         f"{self.atoms.index(atom2)+1:5d}\n"
